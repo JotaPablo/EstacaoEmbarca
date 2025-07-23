@@ -35,7 +35,7 @@
 #define VRX_PIN 27  
 #define VRY_PIN 26
 
-#define SEA_LEVEL_PRESSURE 102100.0f // Pressão atmosférica ao nível do mar em Pa
+#define SEA_LEVEL_PRESSURE 1021.0f // Pressão atmosférica ao nível do mar em hPa
 
 // Estrutura para armazenar os dados dos sensores
 typedef struct {
@@ -88,7 +88,7 @@ volatile bool modo_simulacao = false; // Variável para modo de simulação
 // Estrutura de dados
 struct http_state
 {
-    char response[12000];
+    char response[10000];
     size_t len;
     size_t sent;
 };
@@ -125,15 +125,15 @@ int main()
 
     // Cria mutexes
     xMutexSensorData = xSemaphoreCreateMutex();
-    xMutexDisplay    = xSemaphoreCreateMutex();
+    xMutexDisplay = xSemaphoreCreateMutex();
 
     xWifiReadySemaphore = xSemaphoreCreateBinary(); // Cria um semáforo binário
 
 
     // Cria tasks
-    xTaskCreate(vSensorTask,  "SensorTask",  configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+    xTaskCreate(vSensorTask,  "SensorTask",  configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, NULL);
     xTaskCreate(vDisplayTask, "DisplayTask", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vWebServerTask, "WebServerTask", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 3, NULL);
+    xTaskCreate(vWebServerTask, "WebServerTask", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL);
     xTaskCreate(vMatrizLedsTask, "MatrizLedsTask", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
     xTaskCreate(vLedsBuzzerTask, "LedsBuzzerTask", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
 
@@ -152,8 +152,6 @@ void button_callback(uint gpio, uint32_t events){
 
             // Reinicia os limites
             reset_limits = true;
-            // Alterna entre modo de simulação e normal
-            modo_simulacao = !modo_simulacao;
 
             last_time_debounce_button_a = current_time; // Atualiza o tempo do último debounce do botão A
         }
@@ -211,7 +209,7 @@ void vSensorTask(void *pvParameters) {
     int32_t raw_temp_bmp, raw_pressure;
     AHT20_Data aht_data;
     float temp_bmp = 0.0f;
-    float pressure = 0.0f; // Pressão em Pa
+    float pressure = 0.0f; // Pressão em hPa
     float altitude = 0.0f; // Altitude em metros
 
     xSemaphoreTake(xWifiReadySemaphore, portMAX_DELAY);
@@ -228,6 +226,7 @@ void vSensorTask(void *pvParameters) {
                 xSensorData.min_pressure = 950.0f;
                 xSensorData.max_humidity = 100.0f;
                 xSensorData.min_humidity = 20.0f;
+                xSensorData.offset_temperature = 0.0f;                 
                 reset_limits = false; // Reseta a flag
                 xSemaphoreGive(xMutexSensorData);
             }
@@ -236,11 +235,11 @@ void vSensorTask(void *pvParameters) {
         if(modo_simulacao) {
             // Modo de simulação: lê valores dos joysticks
             adc_select_input(1); // Seleciona o canal para o eixo X
-            temp_bmp = adc_read(); // Simula temperatura BMP280
-            //aht_data.temperature = adc_read() / 10.0f; // Simula temperatura AHT20
+            //temp_bmp = adc_read(); // Simula temperatura BMP280
+            aht_data.temperature = adc_read() / 4095.0f * (150.0f + 50.0f) - 50.0f; // Simula temperatura AHT20
 
             adc_select_input(0); // Seleciona o canal para o eixo Y
-            pressure = adc_read() * 100; // Simula pressão BMP280
+            pressure = (adc_read() / 4095.0f) * (1500.0f - 600.0f) + 600.0f;
             aht_data.humidity = adc_read() / 4095.0f * 100; // Simula umidade AHT20
 
             altitude = calculate_altitude(pressure); // Calcula altitude com a pressão simulada
@@ -249,7 +248,7 @@ void vSensorTask(void *pvParameters) {
             // Leitura BMP280
             bmp280_read_raw(I2C_PORT_SENSORS, &raw_temp_bmp, &raw_pressure);
             temp_bmp = bmp280_convert_temp(raw_temp_bmp, &bmp_params) / 100.0f;
-            pressure = bmp280_convert_pressure(raw_pressure, raw_temp_bmp, &bmp_params);
+            pressure = bmp280_convert_pressure(raw_pressure, raw_temp_bmp, &bmp_params) / 100.0f; // Converte Pa para hPa
             altitude = calculate_altitude(pressure); 
 
             // Leitura AHT20
@@ -263,27 +262,27 @@ void vSensorTask(void *pvParameters) {
 
         // Protege acesso aos dados compartilhados
         if (xSemaphoreTake(xMutexSensorData, portMAX_DELAY) == pdTRUE) {
-            xSensorData.temperature = aht_data.temperature; // Temperatura AHT20
+            xSensorData.temperature = aht_data.temperature + xSensorData.offset_temperature; // Temperatura AHT20
             xSensorData.pressure = pressure;
             xSensorData.altitude = altitude;
             xSensorData.humidity = aht_data.humidity;
             xSemaphoreGive(xMutexSensorData);
 
-            printf("Temp: %.2f C, Humidity: %.2f %%, Pressure: %.2f Pa, Altitude: %.2f m\n",
+            printf("Temp: %.2f C, Humidity: %.2f %%, Pressure: %.2f hPa, Altitude: %.2f m\n",
                    xSensorData.temperature,
                    xSensorData.humidity,
-                   xSensorData.pressure / 100.0f, // Converte Pa para hPa
+                   xSensorData.pressure, 
                    xSensorData.altitude);
             printf("Max Temp: %.2f C, Min Temp: %.2f C, Offset: %.2f C\n",
                    xSensorData.max_temperature,
                    xSensorData.min_temperature,
                    xSensorData.offset_temperature);
-            printf("Max Pressure: %.2f Pa, Min Pressure: %.2f Pa\n",
-                   xSensorData.max_pressure,
-                   xSensorData.min_pressure);
             printf("Max Humidity: %.2f %%, Min Humidity: %.2f %%\n",
                    xSensorData.max_humidity,
                    xSensorData.min_humidity);
+            printf("Max Pressure: %.2f hPa, Min Pressure: %.2f hPa\n",
+                   xSensorData.max_pressure,
+                   xSensorData.min_pressure);
             
         }
 
@@ -317,7 +316,7 @@ void vDisplayTask(void *pvParameters) {
         snprintf(tempLine, sizeof(tempLine),    "Temp:%.1f C", data.temperature);
         snprintf(altitudeLine, sizeof(altitudeLine), "Alt:%.2f m", data.altitude);
         snprintf(humidityLine, sizeof(humidityLine), "Umidade:%.1f %%", data.humidity);
-        snprintf(pressureLine, sizeof(pressureLine), "Pressao:%.1f hPa", data.pressure / 100.0f); // Converte Pa -> hPa
+        snprintf(pressureLine, sizeof(pressureLine), "Pressao:%.1f hPa", data.pressure); 
 
         // Atualiza o display com as informações
         if (xSemaphoreTake(xMutexDisplay, portMAX_DELAY) == pdTRUE) {
@@ -350,6 +349,9 @@ void vLedsBuzzerTask(void *pvParameters) {
     xSemaphoreTake(xWifiReadySemaphore, portMAX_DELAY);
     xSemaphoreGive(xWifiReadySemaphore); // Libera para outras tasks
 
+    // Adiciona um atraso para os sensores estabilizarem
+    vTaskDelay(pdMS_TO_TICKS(5000)); // Espera 5 segundos antes de começar os alertas
+
     while (true) {
         SensorData_t data;
 
@@ -361,7 +363,7 @@ void vLedsBuzzerTask(void *pvParameters) {
          // Verifica os limites
         bool alerta_temp = data.temperature < data.min_temperature || data.temperature > data.max_temperature;
         bool alerta_umid = data.humidity < data.min_humidity || data.humidity > data.max_humidity;
-        bool alerta_press = data.pressure/ 100.0f < data.min_pressure || data.pressure/ 100.0f > data.max_pressure;
+        bool alerta_press = data.pressure < data.min_pressure || data.pressure > data.max_pressure;
 
         // Define cor do LED conforme o tipo de alerta
         if (alerta_temp && alerta_umid && alerta_press) {
@@ -435,7 +437,7 @@ void vMatrizLedsTask(void *pvParameters) {
         float pressMin = 800.0f;
         float pressMax = 1200.0f;
         // Ajusta pressão para hPa se necessário (ex: se data.pressure em Pa)
-        float pressure_hPa = data.pressure / 100.0f;
+        float pressure_hPa = data.pressure;
 
         int alturaPressao = (int)(((pressure_hPa - pressMin) / (pressMax - pressMin)) * maxAltura);
         if (alturaPressao > maxAltura) alturaPressao = maxAltura;
@@ -547,12 +549,12 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
             "}",
             data.temperature,
             data.humidity,
-            data.pressure / 100.0f,
+            data.pressure,
             data.altitude,
             data.max_temperature,
             data.min_temperature,
-            data.max_pressure / 100.0f,
-            data.min_pressure / 100.0f,
+            data.max_pressure,
+            data.min_pressure,
             data.max_humidity,
             data.min_humidity,
             data.offset_temperature
