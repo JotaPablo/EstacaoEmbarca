@@ -1,2 +1,4 @@
 build
+config/wifi_config.h
+pico_sdk_import.cmake
 !.vscode/*
