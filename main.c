@@ -400,6 +400,10 @@ void vMatrizLedsTask(void *pvParameters) {
     (void) pvParameters;
 
     npInit(LED_PIN);
+    npWrite(); // Inicializa a matriz de LEDs
+
+    xSemaphoreTake(xWifiReadySemaphore, portMAX_DELAY);
+    xSemaphoreGive(xWifiReadySemaphore); // Libera para outras tasks
 
     SensorData_t data;
 
@@ -530,7 +534,11 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
     // --- GET /estado ---
     if (strstr(req, "GET /estado")) {
         SensorData_t data;
-        data = xSensorData;
+        // Pega o mutex para ler os dados do sensor
+        if (xSemaphoreTake(xMutexSensorData, portMAX_DELAY) == pdTRUE) {
+            data = xSensorData; // Copia os dados para a variável local
+            xSemaphoreGive(xMutexSensorData);
+        } 
 
         char json_payload[256];
         int json_len = snprintf(json_payload, sizeof(json_payload),
@@ -581,6 +589,8 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
             float min_h, max_h;
             float min_p, max_p;
 
+        if (xSemaphoreTake(xMutexSensorData, portMAX_DELAY) == pdTRUE) {
+        
             if (sscanf(body,
                 "{"
                 "\"min_temperature\":%f,"
@@ -604,6 +614,9 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
                 xSensorData.min_pressure = min_p;
                 xSensorData.max_pressure = max_p;
             }
+            // Libera o mutex após atualizar os limites
+            xSemaphoreGive(xMutexSensorData);
+        }
 
             const char *txt = "Limites e offset atualizados";
             hs->len = snprintf(hs->response, sizeof(hs->response),
@@ -642,8 +655,6 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
     pbuf_free(p);
     return ERR_OK;
 } 
-
-
 
 // Função de callback para enviar dados HTTP
 static err_t http_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
