@@ -90,7 +90,7 @@ int npGetIndex(int x, int y) {
 }
 
 void npFillCollumns(int x, int altura, uint8_t r, uint8_t g, uint8_t b){
-    for (int y = 0; y < altura - 1; y++) {
+    for (int y = 0; y <= altura - 1; y++) {
         npSetLED(npGetIndex(x, y), r, g, b);
     }
 }
